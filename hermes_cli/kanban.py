@@ -26,7 +26,6 @@ from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_swarm as ks
-from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
 
 # ---------------------------------------------------------------------------
@@ -1223,20 +1222,9 @@ def _cmd_init(args: argparse.Namespace) -> int:
     path = kb.init_db()
     print(f"Kanban DB initialized at {path}")
 
-    # Seed bundled skills (e.g. kanban-worker) into the active profile so
-    # the kanban dispatcher can use them without a separate `hermes profile
-    # create` step.  This is best-effort — a missing or broken profile is
-    # not fatal to `kanban init`.
-    try:
-        profile_name = get_active_profile_name() or "default"
-        profile_dir = get_profile_dir(profile_name)
-        result = seed_profile_skills(profile_dir, quiet=True)
-        if result:
-            copied = result.get("copied", [])
-            if copied:
-                print(f"Seeded skill(s) into profile {profile_name}: {', '.join(copied)}")
-    except Exception:
-        pass  # best-effort
+    # Bundled skills are not seeded into profile-local skills/. Kanban workers
+    # resolve shared skills through skills.external_dirs; profile skills/ remains
+    # reserved for real overlays/private skills.
 
     print()
     # Enumerate profiles on disk so the user knows what assignees are

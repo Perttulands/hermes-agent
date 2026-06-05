@@ -584,7 +584,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
+    # Scan profile-local overlays first, then shared/external baseline roots.
     dirs_to_scan = []
     if SKILLS_DIR.exists():
         dirs_to_scan.append(SKILLS_DIR)
@@ -665,22 +665,16 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         JSON string with minimal skill info: name, description, category
     """
     try:
-        if not SKILLS_DIR.exists():
-            SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-            return json.dumps(
-                {
-                    "success": True,
-                    "skills": [],
-                    "categories": [],
-                    "message": f"No skills found. Skills directory created at {display_hermes_home()}/skills/",
-                },
-                ensure_ascii=False,
-            )
-
-        # Find all skills
+        # Find all skills. Do not require the profile-local skills/ directory to
+        # exist: profiles can be pure shared-baseline consumers with no local
+        # overlays at all.
         all_skills = _find_all_skills()
 
         if not all_skills:
+            try:
+                SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
             return json.dumps(
                 {
                     "success": True,
@@ -917,7 +911,8 @@ def skill_view(
 
         from agent.skill_utils import get_external_skills_dirs
 
-        # Build list of all skill directories to search
+        # Build list of all skill directories to search: profile-local overlays
+        # first, then shared/external baseline roots.
         all_dirs = []
         if SKILLS_DIR.exists():
             all_dirs.append(SKILLS_DIR)

@@ -75,11 +75,20 @@ class TestGetExternalSkillsDirs:
         assert result == []
 
     def test_no_config_file(self, hermes_home):
-        # No config.yaml at all
+        # No config.yaml and no sibling shared skills dir
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
             from agent.skill_utils import get_external_skills_dirs
             result = get_external_skills_dirs()
         assert result == []
+
+    def test_implicit_shared_sibling_dir_returned_without_config(self, hermes_home):
+        """Fresh profiles still see the shared skill repository before config exists."""
+        shared = hermes_home.parent / "skills"
+        shared.mkdir()
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.skill_utils import get_external_skills_dirs
+            result = get_external_skills_dirs()
+        assert result == [shared.resolve()]
 
     def test_string_value_converted_to_list(self, hermes_home, external_skills_dir):
         (hermes_home / "config.yaml").write_text(
@@ -138,6 +147,22 @@ class TestExternalSkillsInFindAll:
         matching = [s for s in skills if s["name"] == "my-external-skill"]
         assert len(matching) == 1
         assert matching[0]["description"] == "Local version"
+    def test_external_baseline_works_when_local_skills_dir_is_missing(self, hermes_home, external_skills_dir):
+        """Profiles may have no local skill copies; external shared skills still list."""
+        local_skills = hermes_home / "skills"
+        local_skills.rmdir()
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
+        )
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+        ):
+            from tools.skills_tool import skills_list
+            result = json.loads(skills_list())
+
+        assert result["success"] is True
+        assert [s["name"] for s in result["skills"]] == ["my-external-skill"]
 
 
 class TestExternalSkillView:

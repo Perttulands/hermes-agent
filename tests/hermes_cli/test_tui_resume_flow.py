@@ -471,7 +471,7 @@ def test_termux_skips_bundled_skill_sync_when_stamp_fresh(monkeypatch, tmp_path,
     assert calls == []
 
 
-def test_termux_forced_bundled_skill_sync_runs(monkeypatch, tmp_path, main_mod):
+def test_bundled_skill_sync_startup_noops_even_when_forced(monkeypatch, tmp_path, main_mod):
     calls = []
 
     monkeypatch.setenv("TERMUX_VERSION", "1")
@@ -484,8 +484,8 @@ def test_termux_forced_bundled_skill_sync_runs(monkeypatch, tmp_path, main_mod):
         types.SimpleNamespace(sync_skills=lambda quiet: calls.append(quiet)),
     )
 
-    assert main_mod._sync_bundled_skills_for_startup() is True
-    assert calls == [True]
+    assert main_mod._sync_bundled_skills_for_startup() is False
+    assert calls == []
 
 
 def test_read_git_revision_fingerprint_resolves_packed_refs(tmp_path, main_mod):

@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir, is_termux
+from hermes_constants import get_config_path, get_default_hermes_root, get_skills_dir, is_termux
 
 logger = logging.getLogger(__name__)
 
@@ -338,6 +338,24 @@ def _external_dirs_cache_clear() -> None:
     _EXTERNAL_DIRS_CACHE.clear()
 
 
+def _implicit_shared_skills_dirs(local_skills: Path) -> List[Path]:
+    """Return local shared skill roots that every profile should see.
+
+    Perttu's multi-agent setup keeps shared skills in ``<hermes-root>/../skills``
+    (currently ``/home/perttu/skills``) and profile-local ``skills/`` directories
+    are overlays only. Treat that sibling directory as an implicit external root
+    when it exists, so fresh profiles without config.yaml still see the shared
+    baseline instead of needing bundled-copy seeding.
+    """
+    try:
+        candidate = (get_default_hermes_root().parent / "skills").resolve()
+        if candidate.is_dir() and candidate != local_skills.resolve():
+            return [candidate]
+    except Exception:
+        pass
+    return []
+
+
 def get_external_skills_dirs() -> List[Path]:
     """Read ``skills.external_dirs`` from config.yaml and return validated paths.
 
@@ -351,8 +369,11 @@ def get_external_skills_dirs() -> List[Path]:
     when the cache is absent.
     """
     config_path = get_config_path()
+    local_skills = get_skills_dir().resolve()
+    implicit_dirs = _implicit_shared_skills_dirs(local_skills)
+
     if not config_path.exists():
-        return []
+        return list(implicit_dirs)
 
     # Cache key: (absolute path, mtime_ns).  stat() is ~2us vs ~85ms for
     # the full YAML parse, so the fast path is nearly free.
@@ -371,31 +392,30 @@ def get_external_skills_dirs() -> List[Path]:
     try:
         parsed = yaml_load(config_path.read_text(encoding="utf-8"))
     except Exception:
-        return []
+        return list(implicit_dirs)
     if not isinstance(parsed, dict):
-        return []
+        return list(implicit_dirs)
 
     skills_cfg = parsed.get("skills")
     if not isinstance(skills_cfg, dict):
-        return []
+        return list(implicit_dirs)
 
     raw_dirs = skills_cfg.get("external_dirs")
     if not raw_dirs:
-        result: List[Path] = []
+        result: List[Path] = list(implicit_dirs)
         if cache_key is not None:
             _EXTERNAL_DIRS_CACHE[cache_key] = list(result)
         return result
     if isinstance(raw_dirs, str):
         raw_dirs = [raw_dirs]
     if not isinstance(raw_dirs, list):
-        return []
+        return list(implicit_dirs)
 
     from hermes_constants import get_hermes_home
 
     hermes_home = get_hermes_home()
-    local_skills = get_skills_dir().resolve()
-    seen: Set[Path] = set()
-    result = []
+    seen: Set[Path] = set(implicit_dirs)
+    result: List[Path] = list(implicit_dirs)
 
     for entry in raw_dirs:
         entry = str(entry).strip()

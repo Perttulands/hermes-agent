@@ -587,20 +587,13 @@ def _mark_termux_bundled_skills_synced() -> None:
 
 
 def _sync_bundled_skills_for_startup() -> bool:
-    """Sync bundled skills, but skip unchanged Termux checkouts cheaply.
+    """Do not copy bundled skills into the active profile on CLI startup.
 
-    Hashing every bundled skill is safe but expensive on older Android
-    storage. The git/ref stamp keeps post-update correctness: a changed
-    checkout revision forces one real sync, then later starts skip it.
+    Local profiles use shared skill roots (``skills.external_dirs``) plus optional
+    profile-local overlays. Copy-on-startup would repopulate duplicate bundled
+    skills under every profile and break that model.
     """
-    if _is_termux_startup_environment() and not _termux_bundled_skills_sync_needed():
-        return False
-
-    from tools.skills_sync import sync_skills
-
-    sync_skills(quiet=True)
-    _mark_termux_bundled_skills_synced()
-    return True
+    return False
 
 
 def _termux_should_prefetch_update_check() -> bool:
@@ -1932,23 +1925,14 @@ def _pin_kanban_board_env() -> None:
 
 
 def _sync_bundled_skills_quietly() -> None:
-    """Seed ``~/.hermes/skills/`` with the bundled skill library on first launch.
+    """Do not copy bundled skills into the active profile.
 
-    Called from any CLI entrypoint that the user might use as their first
-    interaction with Hermes — chat, dashboard (the desktop GUI's backend),
-    and gateway. The skills_sync module is manifest-based and idempotent:
-    skipped skills cost ~milliseconds, so calling this repeatedly is fine.
-
-    Failures are swallowed because skills are an enhancement, not a hard
-    dependency. Hermes still functions without them; the user just sees an
-    empty skills library.
+    CLI, dashboard, and gateway entrypoints keep this compatibility hook, but
+    profiles now resolve the shared skill baseline through external skill roots.
+    Profile-local skills/ directories are reserved for real overlays/private
+    skills, not seeded bundled copies.
     """
-    try:
-        from tools.skills_sync import sync_skills
-
-        sync_skills(quiet=True)
-    except Exception:
-        pass
+    return None
 
 
 def _resolve_use_tui(args) -> bool:
@@ -2080,7 +2064,8 @@ def cmd_chat(args):
         except Exception:
             pass
 
-    # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
+    # Profile-local bundled skill copy-on-launch is disabled; shared skills are
+    # resolved through skills.external_dirs.
     try:
         _sync_bundled_skills_for_startup()
     except Exception:
@@ -8155,26 +8140,9 @@ def _update_via_zip(args):
     _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
 
-    # Sync skills
-    try:
-        from tools.skills_sync import sync_skills
-
-        print("→ Syncing bundled skills...")
-        result = sync_skills(quiet=True)
-        if result["copied"]:
-            print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
-        if result.get("updated"):
-            print(
-                f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}"
-            )
-        if result.get("user_modified"):
-            print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
-        if result.get("cleaned"):
-            print(f"  − {len(result['cleaned'])} removed from manifest")
-        if not result["copied"] and not result.get("updated"):
-            print("  ✓ Skills are up to date")
-    except Exception:
-        pass
+    # Bundled skills are not copied into profile-local skills/. Shared baseline
+    # skills come from configured external_dirs, with profile skills reserved for
+    # real overlays/private skills.
 
     print()
     print("✓ Update complete!")
@@ -10704,67 +10672,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception:
             pass  # non-fatal — worst case a lazy import fails gracefully
 
-        # Sync bundled skills (copies new, updates changed, respects user deletions)
-        try:
-            from tools.skills_sync import sync_skills
-
-            print()
-            print("→ Syncing bundled skills...")
-            result = sync_skills(quiet=True)
-            if result["copied"]:
-                print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
-            if result.get("updated"):
-                print(
-                    f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}"
-                )
-            if result.get("user_modified"):
-                print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
-            if result.get("cleaned"):
-                print(f"  − {len(result['cleaned'])} removed from manifest")
-            if not result["copied"] and not result.get("updated"):
-                print("  ✓ Skills are up to date")
-        except Exception as e:
-            logger.debug("Skills sync during update failed: %s", e)
-
-        # Sync bundled skills to all profiles (including the active one).
-        # seed_profile_skills() uses subprocess with an explicit HERMES_HOME so
-        # it is not affected by sync_skills()'s module-level HERMES_HOME cache,
-        # which means the active profile is reliably synced regardless of whether
-        # the caller's HERMES_HOME env var points at the default or a named profile.
-        try:
-            from hermes_cli.profiles import (
-                list_profiles,
-                seed_profile_skills,
-            )
-
-            all_profiles = list_profiles()
-            if all_profiles:
-                print()
-                print("→ Syncing bundled skills to all profiles...")
-                for p in all_profiles:
-                    try:
-                        r = seed_profile_skills(p.path, quiet=True)
-                        if r and r.get("skipped_opt_out"):
-                            status = "opted out (--no-skills)"
-                        elif r:
-                            copied = len(r.get("copied", []))
-                            updated = len(r.get("updated", []))
-                            modified = len(r.get("user_modified", []))
-                            parts = []
-                            if copied:
-                                parts.append(f"+{copied} new")
-                            if updated:
-                                parts.append(f"↑{updated} updated")
-                            if modified:
-                                parts.append(f"~{modified} user-modified")
-                            status = ", ".join(parts) if parts else "up to date"
-                        else:
-                            status = "sync failed"
-                        print(f"  {p.name}: {status}")
-                    except Exception as pe:
-                        print(f"  {p.name}: error ({pe})")
-        except Exception:
-            pass  # profiles module not available or no profiles
+        # Bundled skills are not copied into profile-local skills/. Shared
+        # baseline skills come from configured external_dirs; profile skills are
+        # reserved for real overlays/private skills.
 
         # Sync Honcho host blocks to all profiles
         try:
@@ -11641,7 +11551,6 @@ def cmd_profile(args):
         list_profiles,
         create_profile,
         delete_profile,
-        seed_profile_skills,
         set_active_profile,
         get_active_profile_name,
         check_alias_collision,
@@ -11771,25 +11680,9 @@ def cmd_profile(args):
                 except Exception:
                     pass  # Honcho plugin not installed or not configured
 
-            # Seed bundled skills (skip if --clone-all already copied them, or
-            # if --no-skills was passed — in which case seed_profile_skills()
-            # honors the marker file and returns skipped_opt_out=True).
-            if not clone_all:
-                result = seed_profile_skills(profile_dir)
-                if result and result.get("skipped_opt_out"):
-                    print(
-                        "No bundled skills seeded (--no-skills). "
-                        "Delete .no-bundled-skills in the profile to opt back in."
-                    )
-                elif result:
-                    copied = len(result.get("copied", []))
-                    print(f"{copied} bundled skills synced.")
-                else:
-                    print(
-                        "⚠ Skills could not be seeded. Run `{} update` to retry.".format(
-                            name
-                        )
-                    )
+            # Fresh profiles intentionally do not get bundled skill copies.
+            # Shared skills come from skills.external_dirs; profile-local skills
+            # are only for real overlays/private skills.
 
             # Create wrapper alias
             if not no_alias:
@@ -15495,7 +15388,7 @@ Examples:
     profile_create.add_argument(
         "--no-skills",
         action="store_true",
-        help="Create an empty profile with no bundled skills (opts out of `hermes update` skill sync)",
+        help="Deprecated compatibility flag; profiles use shared skills via external_dirs",
     )
     profile_create.add_argument(
         "--description",

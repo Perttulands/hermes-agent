@@ -10,8 +10,8 @@ zero migration needed.
 
 Usage::
 
-    hermes profile create coder          # fresh profile + bundled skills
-    hermes profile create coder --clone  # also copy config, .env, SOUL.md, skills
+    hermes profile create coder          # fresh profile; skills come from shared roots
+    hermes profile create coder --clone  # also copy config, .env, SOUL.md, profile overlays
     hermes profile create coder --clone-all  # full copy of source profile
     coder chat                           # use via wrapper alias
     hermes -p coder chat                 # or via flag
@@ -99,12 +99,12 @@ _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "node_modules",
 })
 
-# Marker file written by `hermes profile create --no-skills`.  When present in
-# a profile's root, callers of seed_profile_skills() (fresh-create, `hermes
-# update`'s all-profile sync, the web dashboard) skip bundled-skill seeding
-# for that profile.  The user can still install skills manually via
-# `hermes skills install` or drop SKILL.md files into the profile's skills/.
-# Delete the marker file to opt back in.
+# Marker file written by legacy `hermes profile create --no-skills` calls.
+# Profile-local bundled-skill seeding is disabled in this installation: profiles
+# get the shared skill catalog via ``skills.external_dirs`` and keep only real
+# profile overlays/private skills under their own ``skills/`` directory. The
+# marker is retained only so old profiles and tests can recognize the historical
+# opt-out state.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
 
@@ -687,10 +687,11 @@ def create_profile(
     no_alias:
         If True, skip wrapper script creation.
     no_skills:
-        If True, create an empty profile with no bundled skills, and write
-        a marker file so ``hermes update`` skips re-seeding this profile's
-        skills. Mutually exclusive with ``clone_config``/``clone_all`` (those
-        explicitly copy skills from the source).
+        Deprecated compatibility flag. If True, write the legacy opt-out
+        marker, but profiles no longer receive bundled skill copies either way;
+        shared skills are resolved through configured external skill roots.
+        Mutually exclusive with ``clone_config``/``clone_all`` because those
+        explicitly copy profile-local overlays from the source.
 
     Returns
     -------
@@ -763,10 +764,9 @@ def create_profile(
                         except OSError:
                             pass
 
-            # Clone installed skills from the source profile. The dashboard's
-            # "clone from default" flow is expected to preserve both bundled
-            # and user-installed skills so the new profile immediately has the
-            # same agent capabilities as the source profile.
+            # Clone profile-local skill overlays from the source profile. Shared
+            # baseline skills are intentionally not copied into each profile;
+            # they are resolved through skills.external_dirs.
             source_skills = source_dir / "skills"
             if source_skills.is_dir():
                 shutil.copytree(source_skills, profile_dir / "skills", dirs_exist_ok=True)
@@ -789,18 +789,18 @@ def create_profile(
         except Exception:
             pass  # best-effort — don't fail profile creation over this
 
-    # Write the opt-out marker so seed_profile_skills() and `hermes update`'s
-    # all-profile sync loop both skip this profile for bundled-skill seeding.
+    # Preserve the legacy marker for old callers, but it no longer changes
+    # runtime skill availability: profiles rely on shared external skill roots.
     if no_skills:
         try:
             (profile_dir / NO_BUNDLED_SKILLS_MARKER).write_text(
-                "This profile opted out of bundled-skill seeding "
-                "(`hermes profile create --no-skills`).\n"
-                "Delete this file to re-enable sync on the next `hermes update`.\n",
+                "Legacy marker from `hermes profile create --no-skills`.\n"
+                "Profile-local bundled-skill seeding is disabled; shared skills "
+                "come from skills.external_dirs.\n",
                 encoding="utf-8",
             )
         except OSError:
-            pass  # best-effort — the feature still works via the empty skills/ dir
+            pass  # best-effort — the flag is compatibility-only
 
     # Persist description if the caller provided one. Done last so a
     # partial-create failure doesn't strand a description file in an
@@ -827,48 +827,24 @@ def create_profile(
 
 
 def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict]:
-    """Seed bundled skills into a profile via subprocess.
+    """Compatibility no-op for the old per-profile bundled-skill seeding path.
 
-    Uses subprocess because sync_skills() caches HERMES_HOME at module level.
-    Returns the sync result dict, or None on failure.
-
-    Profiles that opted out of bundled skills (via ``hermes profile create
-    --no-skills`` — which writes ``.no-bundled-skills`` to the profile root)
-    are skipped and get an empty-result dict so callers can report
-    "opted out" instead of "failed".
+    This installation uses shared skill roots (notably ``/home/perttu/skills``
+    via ``skills.external_dirs``) as the baseline for every profile. Profile
+    ``skills/`` directories are reserved for real overlays/private skills, so
+    copying the bundled catalog into every profile would recreate the exact
+    duplication this guard is meant to prevent.
     """
-    if has_bundled_skills_opt_out(profile_dir):
-        return {
-            "copied": [],
-            "updated": [],
-            "user_modified": [],
-            "skipped_opt_out": True,
-        }
-    project_root = Path(__file__).parent.parent.resolve()
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c",
-             "import json; from tools.skills_sync import sync_skills; "
-             "r = sync_skills(quiet=True); print(json.dumps(r))"],
-            env={**os.environ, "HERMES_HOME": str(profile_dir)},
-            cwd=str(project_root),
-            capture_output=True, text=True, timeout=60,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return json.loads(result.stdout.strip())
-        if not quiet:
-            print(f"⚠ Skill seeding returned exit code {result.returncode}")
-            if result.stderr.strip():
-                print(f"  {result.stderr.strip()[:200]}")
-        return None
-    except subprocess.TimeoutExpired:
-        if not quiet:
-            print("⚠ Skill seeding timed out (60s)")
-        return None
-    except Exception as e:
-        if not quiet:
-            print(f"⚠ Skill seeding failed: {e}")
-        return None
+    return {
+        "copied": [],
+        "updated": [],
+        "user_modified": [],
+        "cleaned": [],
+        "skipped": 0,
+        "total_bundled": 0,
+        "skipped_shared_baseline": True,
+        "skipped_opt_out": has_bundled_skills_opt_out(profile_dir),
+    }
 
 
 def delete_profile(name: str, yes: bool = False) -> Path:

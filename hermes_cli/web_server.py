@@ -6898,13 +6898,9 @@ async def create_profile_endpoint(body: ProfileCreate):
             no_skills=body.no_skills,
             description=body.description,
         )
-        # Match the CLI's profile-create flow: fresh named profiles get the
-        # bundled skills installed. When cloning from default, create_profile()
-        # has already copied the source profile's skills, including any
-        # user-installed skills. When no_skills=True, create_profile() wrote
-        # the opt-out marker and seed_profile_skills() will no-op.
-        if not clone:
-            profiles_mod.seed_profile_skills(path, quiet=True)
+        # Fresh dashboard-created profiles intentionally do not get bundled skill
+        # copies. Shared baseline skills come from skills.external_dirs; profile
+        # skills/ is reserved for real overlays/private skills.
 
         # Match the CLI's profile-create flow: named profiles should get a
         # wrapper in ~/.local/bin when the alias is safe to create.
