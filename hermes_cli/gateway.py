@@ -4701,7 +4701,10 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     # that ships new unit settings won't take effect until the next manual
     # `hermes gateway start/restart` — leaving the gateway vulnerable to
     # the exact failure mode the new settings were meant to prevent.
-    if supports_systemd_services():
+    disable_service_refresh = str(
+        os.getenv("HERMES_DISABLE_SERVICE_REFRESH", "")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if supports_systemd_services() and not disable_service_refresh:
         try:
             refresh_systemd_unit_if_needed(system=False)
         except Exception:
