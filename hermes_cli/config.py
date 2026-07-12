@@ -1092,6 +1092,9 @@ DEFAULT_CONFIG = {
     
     "terminal": {
         "backend": "local",
+        # Route Codex/Claude terminal-agent work through tmux by default.
+        # Set false only when native terminal launches are intentionally desired.
+        "native_agent_cli_guard": True,
         "modal_mode": "auto",
         "cwd": ".",  # Use current directory
         "timeout": 180,
@@ -6747,6 +6750,7 @@ TERMINAL_CONFIG_ENV_MAP = {
     "docker_run_as_host_user": "TERMINAL_DOCKER_RUN_AS_HOST_USER",
     "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
     "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
+    "native_agent_cli_guard": "TERMINAL_NATIVE_AGENT_CLI_GUARD",
     "sandbox_dir": "TERMINAL_SANDBOX_DIR",
     "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
 }

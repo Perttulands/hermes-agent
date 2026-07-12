@@ -74,6 +74,17 @@ def _resolve_args() -> list[str]:
     return shlex.split(raw)
 
 
+def _blocked_acp_command_message(command: str | None) -> str | None:
+    basename = os.path.basename(str(command or "").strip()).lower()
+    if basename != "codex":
+        return None
+    return (
+        "Codex CLI is blocked as a Copilot ACP command. `codex` is a terminal "
+        "agent for this system, not the GitHub Copilot ACP transport; route "
+        "Codex work through tmux-agent-driving instead."
+    )
+
+
 def _resolve_home_dir() -> str:
     """Return a stable HOME for child ACP processes."""
     home = os.environ.get("HOME", "").strip()
@@ -413,6 +424,9 @@ class CopilotACPClient:
         self.base_url = base_url or ACP_MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
+        blocked_message = _blocked_acp_command_message(self._acp_command)
+        if blocked_message:
+            raise ValueError(blocked_message)
         self._acp_args = list(acp_args or args or _resolve_args())
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)

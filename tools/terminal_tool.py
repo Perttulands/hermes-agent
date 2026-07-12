@@ -37,6 +37,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import time
 import threading
 import atexit
@@ -45,7 +46,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-from utils import env_var_enabled
+from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -513,6 +514,184 @@ def _safe_command_preview(command: Any, limit: int = 200) -> str:
     except Exception:
         return f"<{type(command).__name__}>"
 
+
+_NATIVE_AGENT_CLI_TARGETS = frozenset({"codex", "claude"})
+_NATIVE_AGENT_CLI_SHELLS = frozenset({"bash", "sh", "zsh", "ksh"})
+_NATIVE_AGENT_CLI_WRAPPERS = frozenset({"command", "exec", "nohup", "setsid", "time"})
+_NATIVE_AGENT_GUARD_ENV = "TERMINAL_NATIVE_AGENT_CLI_GUARD"
+_NATIVE_AGENT_ALLOW_ENV = "HERMES_ALLOW_NATIVE_TERMINAL_AGENT"
+_NATIVE_AGENT_ALLOW_PREFIX = f"{_NATIVE_AGENT_ALLOW_ENV}=1"
+
+
+def _shell_tokens(command: str) -> list[str]:
+    """Tokenize a shell command enough to find command-position executables."""
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    return list(lexer)
+
+
+def _token_basename(token: str) -> str:
+    """Return a lowercase executable basename for a shell token."""
+    base = os.path.basename(str(token).strip())
+    if base.endswith(".exe"):
+        base = base[:-4]
+    return base.lower()
+
+
+def _assignment_name_value(token: str) -> tuple[str, str] | None:
+    if not _looks_like_env_assignment(token):
+        return None
+    name, value = token.split("=", 1)
+    return name, value
+
+
+def _sets_native_agent_allow(token: str) -> bool:
+    pair = _assignment_name_value(token)
+    if pair is None:
+        return False
+    name, value = pair
+    return name == _NATIVE_AGENT_ALLOW_ENV and is_truthy_value(value)
+
+
+def _skip_env_command(tokens: list[str], index: int) -> tuple[int, bool]:
+    """Skip an env(1) wrapper and leading assignments."""
+    allow = False
+    index += 1
+    while index < len(tokens) and tokens[index].startswith("-"):
+        index += 1
+    while index < len(tokens) and _looks_like_env_assignment(tokens[index]):
+        allow = allow or _sets_native_agent_allow(tokens[index])
+        index += 1
+    return index, allow
+
+
+def _skip_sudo_command(tokens: list[str], index: int) -> int:
+    """Skip sudo and common sudo option arguments to reach the wrapped command."""
+    index += 1
+    options_with_values = {
+        "-u", "--user", "-g", "--group", "-h", "--host", "-p", "--prompt",
+        "-C", "--close-from", "-T", "--command-timeout",
+    }
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if not token.startswith("-") or token == "-":
+            return index
+        option = token.split("=", 1)[0]
+        index += 1
+        if option in options_with_values and "=" not in token and index < len(tokens):
+            index += 1
+    return index
+
+
+def _extract_shell_c_payload(tokens: list[str], index: int) -> str | None:
+    """Return the payload passed to `sh -c` / `bash -lc`, if present."""
+    i = index + 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--":
+            i += 1
+            continue
+        if token.startswith("-") and "c" in token[1:]:
+            return tokens[i + 1] if i + 1 < len(tokens) else None
+        if not token.startswith("-"):
+            return None
+        i += 1
+    return None
+
+
+def _iter_simple_shell_commands(tokens: list[str]) -> list[list[str]]:
+    """Split shell tokens at command separators."""
+    commands: list[list[str]] = []
+    current: list[str] = []
+    separators = {";", "&&", "||", "|", "&"}
+    for token in tokens:
+        if token in separators:
+            if current:
+                commands.append(current)
+                current = []
+            continue
+        current.append(token)
+    if current:
+        commands.append(current)
+    return commands
+
+
+def _native_agent_target_in_simple_command(tokens: list[str]) -> tuple[str | None, bool]:
+    """Return (target, explicitly_allowed) for one simple shell command."""
+    i = 0
+    explicit_allow = False
+
+    while i < len(tokens) and _looks_like_env_assignment(tokens[i]):
+        explicit_allow = explicit_allow or _sets_native_agent_allow(tokens[i])
+        i += 1
+
+    while i < len(tokens):
+        cmd = _token_basename(tokens[i])
+        if cmd == "env":
+            i, env_allow = _skip_env_command(tokens, i)
+            explicit_allow = explicit_allow or env_allow
+            continue
+        if cmd == "sudo":
+            i = _skip_sudo_command(tokens, i)
+            continue
+        if cmd in _NATIVE_AGENT_CLI_WRAPPERS:
+            i += 1
+            continue
+        break
+
+    if i >= len(tokens):
+        return None, explicit_allow
+
+    cmd = _token_basename(tokens[i])
+    if cmd in _NATIVE_AGENT_CLI_TARGETS:
+        return cmd, explicit_allow
+
+    if cmd in _NATIVE_AGENT_CLI_SHELLS:
+        payload = _extract_shell_c_payload(tokens, i)
+        if payload:
+            inner = _native_agent_target_in_shell(payload)
+            if inner is not None:
+                return inner, explicit_allow
+
+    return None, explicit_allow
+
+
+def _native_agent_target_in_shell(command: str) -> str | None:
+    """Return `codex`/`claude` when a shell command launches one directly."""
+    try:
+        tokens = _shell_tokens(command)
+    except ValueError:
+        return None
+    for simple in _iter_simple_shell_commands(tokens):
+        target, explicit_allow = _native_agent_target_in_simple_command(simple)
+        if target and not explicit_allow:
+            return target
+    return None
+
+
+def _native_terminal_agent_guard_message(command: str) -> str | None:
+    """Return a blocking message for native terminal Codex/Claude launches."""
+    if not env_var_enabled(_NATIVE_AGENT_GUARD_ENV, default="true"):
+        return None
+    if env_var_enabled(_NATIVE_AGENT_ALLOW_ENV):
+        return None
+    target = _native_agent_target_in_shell(command)
+    if not target:
+        return None
+    return (
+        f"Blocked Hermes native terminal launch of `{target}`. For Perttu/CHROTE "
+        "or Tavern terminal-agent work, load `tmux-agent-driving`, discover the "
+        "right tmux socket/session, and drive the existing or new pane there. "
+        f"Do not debug `{target}` auth/doctor/status inside Hermes native terminal "
+        "first; wrong HOME/user/socket/cwd is usually the bug. If this is an "
+        "explicit disposable non-tmux one-shot, rerun with "
+        f"`{_NATIVE_AGENT_ALLOW_PREFIX}` prefixed to the command."
+    )
+
+
 def _looks_like_env_assignment(token: str) -> bool:
     """Return True when *token* is a leading shell environment assignment."""
     if "=" not in token or token.startswith("="):
@@ -973,7 +1152,7 @@ For servers/watchers, do NOT use shell-level background wrappers (nohup/disown/s
 After starting a server, verify readiness with a health check or log signal, then run tests in a separate terminal() call. Avoid blind sleep loops.
 Use process(action="poll") for progress checks, process(action="wait") to block until done.
 Working directory: Use 'workdir' for per-command cwd.
-PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
+PTY mode: Set pty=true for interactive CLI tools when native terminal use is intentional. In Perttu/Tavern profiles, Codex and Claude Code terminal-agent work is normally guarded and should route through tmux-agent-driving instead.
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
 """
@@ -2066,6 +2245,15 @@ def terminal_tool(
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
+
+        native_agent_guard = _native_terminal_agent_guard_message(command)
+        if native_agent_guard:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": native_agent_guard,
+                "status": "blocked",
+            }, ensure_ascii=False)
 
         # Use task_id for environment isolation. By default all subagent
         # task_ids collapse back to "default" so the top-level agent and

@@ -290,6 +290,15 @@ def test_docker_orphan_reaper_is_bridged_everywhere():
     assert "TERMINAL_DOCKER_ORPHAN_REAPER" in _terminal_tool_env_var_names()
 
 
+def test_native_agent_cli_guard_is_bridged_everywhere():
+    """terminal.native_agent_cli_guard must work in CLI, gateway, and config set."""
+
+    assert "native_agent_cli_guard" in _cli_env_map_keys()
+    assert "native_agent_cli_guard" in _gateway_env_map_keys()
+    assert "native_agent_cli_guard" in _save_config_env_sync_keys()
+    assert "TERMINAL_NATIVE_AGENT_CLI_GUARD" in _terminal_tool_env_var_names()
+
+
 def test_docker_volumes_is_bridged_everywhere():
     """Regression pin for ``terminal.docker_volumes`` being silently dropped by
     ``hermes config set``.

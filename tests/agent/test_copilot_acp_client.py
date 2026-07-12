@@ -312,3 +312,12 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+def test_codex_is_rejected_as_acp_command(tmp_path):
+    with pytest.raises(ValueError, match="tmux-agent-driving"):
+        CopilotACPClient(
+            acp_command="/usr/local/bin/codex",
+            acp_args=["--acp", "--stdio"],
+            acp_cwd=str(tmp_path),
+        )
