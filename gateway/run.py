@@ -216,6 +216,25 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+def _resolve_hygiene_threshold(compression_config: Any) -> float:
+    """Resolve the later gateway emergency-compaction threshold."""
+    default = 0.85
+    if not isinstance(compression_config, dict):
+        return default
+    raw = compression_config.get("hygiene_threshold")
+    if isinstance(raw, bool) or raw is None:
+        return default
+    if not isinstance(raw, (int, float, str)):
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    if not 0.50 <= value <= 0.98:
+        return default
+    return value
+
+
 def _non_conversational_metadata(
     metadata: Optional[Dict[str, Any]] = None,
     *,
@@ -10824,7 +10843,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Read model + compression config from config.yaml.
             # NOTE: hygiene threshold is intentionally HIGHER than the agent's
-            # own compressor (0.85 vs 0.50).  Hygiene is a safety net for
+            # own compressor. Hygiene is a safety net for
             # sessions that grew too large between turns — it fires pre-agent
             # to prevent API failures.  The agent's own compressor handles
             # normal context management during its tool loop with accurate
@@ -10865,6 +10884,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # compression.threshold (hygiene runs higher).
                     _comp_cfg = _hyg_data.get("compression", {})
                     if isinstance(_comp_cfg, dict):
+                        _hyg_threshold_pct = _resolve_hygiene_threshold(_comp_cfg)
                         _hyg_compression_enabled = str(
                             _comp_cfg.get("enabled", True)
                         ).lower() in {"true", "1", "yes"}

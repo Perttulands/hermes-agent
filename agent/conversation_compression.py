@@ -52,6 +52,74 @@ COMPACTION_STATUS = (
 )
 
 
+def _attach_todo_snapshot_to_summary(messages: list[dict[str, Any]], snapshot: str) -> bool:
+    """Embed tool task state inside the canonical handoff as reference data.
+
+    Appending the snapshot as a new role=user message makes synthetic state the
+    newest authority and places it after the user's real instruction. Keep the
+    snapshot inside the compaction boundary instead; later real user messages
+    remain newest and therefore authoritative.
+    """
+    if not snapshot:
+        return False
+
+    from agent.context_compressor import (
+        COMPRESSED_SUMMARY_METADATA_KEY,
+        ContextCompressor,
+        _SUMMARY_END_MARKER,
+    )
+
+    reference = (
+        "\n\n[TOOL TASK SNAPSHOT — synthetic reference only; "
+        "subsequent real user messages override]\n"
+        f"{snapshot.strip()}\n"
+        "[/TOOL TASK SNAPSHOT]"
+    )
+
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not (
+            message.get(COMPRESSED_SUMMARY_METADATA_KEY)
+            or ContextCompressor._is_context_summary_content(content)
+        ):
+            continue
+
+        if isinstance(content, str):
+            if _SUMMARY_END_MARKER in content:
+                message["content"] = content.replace(
+                    _SUMMARY_END_MARKER,
+                    reference + "\n\n" + _SUMMARY_END_MARKER,
+                    1,
+                )
+            else:
+                message["content"] = content.rstrip() + reference
+            return True
+
+        if isinstance(content, list):
+            copied = list(content)
+            for index in range(len(copied) - 1, -1, -1):
+                part = copied[index]
+                if not isinstance(part, dict) or not isinstance(part.get("text"), str):
+                    continue
+                text = part["text"]
+                if _SUMMARY_END_MARKER not in text:
+                    continue
+                updated = dict(part)
+                updated["text"] = text.replace(
+                    _SUMMARY_END_MARKER,
+                    reference + "\n\n" + _SUMMARY_END_MARKER,
+                    1,
+                )
+                copied[index] = updated
+                message["content"] = copied
+                return True
+        return False
+
+    return False
+
+
 def _compression_lock_holder(agent: Any) -> str:
     """Build a unique holder id for the lock: pid:tid:agent-instance:uuid.
 
@@ -701,8 +769,11 @@ def compress_context(
                     )
 
         todo_snapshot = agent._todo_store.format_for_injection()
-        if todo_snapshot:
-            compressed.append({"role": "user", "content": todo_snapshot})
+        if todo_snapshot and not _attach_todo_snapshot_to_summary(compressed, todo_snapshot):
+            # Never restore the old behavior of appending synthetic task state
+            # after the latest user turn. Missing a reference snapshot is safer
+            # than manufacturing a newer user instruction.
+            logger.warning("Could not attach todo snapshot to compaction summary; skipping snapshot")
         _ensure_compressed_has_user_turn(messages, compressed)
 
         agent._invalidate_system_prompt()

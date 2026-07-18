@@ -544,13 +544,11 @@ class TestSkillManageDispatcher:
         result = json.loads(raw)
         assert result["success"] is False
 
-    def test_full_create_via_dispatcher(self, tmp_path):
-        """Foreground create does NOT mark the skill as agent-created.
+    def test_full_create_via_dispatcher_marks_model_created(self, tmp_path):
+        """Every model-facing create is profile-local autonomous sediment.
 
-        Skills created by user-directed foreground turns belong to the user;
-        only the background self-improvement review fork should mark its
-        own sediment as agent-created (so the curator can later consolidate
-        or prune it).
+        Deliberately human-authored shared skills use the administrative file
+        path instead; skill_manage creations are curator-managed unless pinned.
         """
         with _skill_dir(tmp_path):
             raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
@@ -558,10 +556,7 @@ class TestSkillManageDispatcher:
             usage = load_usage()
         result = json.loads(raw)
         assert result["success"] is True
-        # No provenance marker on a foreground create — record either missing
-        # entirely (telemetry best-effort) or present with created_by unset.
-        rec = usage.get("test-skill") or {}
-        assert rec.get("created_by") in {None, "", False}
+        assert usage["test-skill"]["created_by"] == "agent"
 
     def test_create_from_background_review_marks_agent_created(self, tmp_path):
         """Background-review fork creates ARE marked as agent-created."""
@@ -758,16 +753,15 @@ def _write_external_skill(external_dir: Path, name: str = "ext-skill") -> Path:
 
 
 class TestExternalSkillMutations:
-    """Verify skill_manage can patch/edit/write/remove/delete skills that live
-    under skills.external_dirs — in place, without duplicating to local.
+    """Shared/external skill roots are readable but model-facing writes are local-only."""
 
-    Regression for issues #4759 and #4381: the read-only gate used to refuse
-    with 'Skill X is in an external directory and cannot be modified', which
-    caused agents to create duplicate copies in ~/.hermes/skills/ as a
-    workaround.
-    """
+    @staticmethod
+    def _assert_read_only(result):
+        assert result["success"] is False, result
+        assert "read-only" in result["error"].lower()
+        assert "profile-local" in result["error"].lower()
 
-    def test_patch_external_skill_writes_in_place(self, tmp_path):
+    def test_patch_external_skill_is_refused(self, tmp_path):
         local = tmp_path / "local"
         external = tmp_path / "vault"
         local.mkdir(); external.mkdir()
@@ -776,29 +770,23 @@ class TestExternalSkillMutations:
         with _two_roots(local, external):
             result = _patch_skill("ext-skill", "OLD_MARKER", "NEW_MARKER")
 
-        assert result["success"] is True, result
-        assert "NEW_MARKER" in (skill_dir / "SKILL.md").read_text()
-        # No duplicate in local
+        self._assert_read_only(result)
+        assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
         assert not (local / "ext-skill").exists()
 
-    def test_edit_external_skill_writes_in_place(self, tmp_path):
+    def test_edit_external_skill_is_refused(self, tmp_path):
         local = tmp_path / "local"
         external = tmp_path / "vault"
         local.mkdir(); external.mkdir()
         skill_dir = _write_external_skill(external)
 
-        new_content = (
-            "---\nname: ext-skill\ndescription: Rewritten.\n---\n\n"
-            "# Rewritten\n\nBrand new body.\n"
-        )
         with _two_roots(local, external):
-            result = _edit_skill("ext-skill", new_content)
+            result = _edit_skill("ext-skill", VALID_SKILL_CONTENT)
 
-        assert result["success"] is True, result
-        assert "Brand new body" in (skill_dir / "SKILL.md").read_text()
-        assert not (local / "ext-skill").exists()
+        self._assert_read_only(result)
+        assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
 
-    def test_write_file_on_external_skill(self, tmp_path):
+    def test_write_file_on_external_skill_is_refused(self, tmp_path):
         local = tmp_path / "local"
         external = tmp_path / "vault"
         local.mkdir(); external.mkdir()
@@ -807,25 +795,25 @@ class TestExternalSkillMutations:
         with _two_roots(local, external):
             result = _write_file("ext-skill", "references/notes.md", "# Notes\n")
 
-        assert result["success"] is True, result
-        assert (skill_dir / "references" / "notes.md").read_text() == "# Notes\n"
-        assert not (local / "ext-skill").exists()
+        self._assert_read_only(result)
+        assert not (skill_dir / "references" / "notes.md").exists()
 
-    def test_remove_file_on_external_skill(self, tmp_path):
+    def test_remove_file_on_external_skill_is_refused(self, tmp_path):
         local = tmp_path / "local"
         external = tmp_path / "vault"
         local.mkdir(); external.mkdir()
         skill_dir = _write_external_skill(external)
         (skill_dir / "references").mkdir()
-        (skill_dir / "references" / "notes.md").write_text("# Notes\n")
+        note = skill_dir / "references" / "notes.md"
+        note.write_text("# Notes\n")
 
         with _two_roots(local, external):
             result = _remove_file("ext-skill", "references/notes.md")
 
-        assert result["success"] is True, result
-        assert not (skill_dir / "references" / "notes.md").exists()
+        self._assert_read_only(result)
+        assert note.exists()
 
-    def test_delete_external_skill_removes_skill_not_root(self, tmp_path):
+    def test_delete_external_skill_is_refused(self, tmp_path):
         local = tmp_path / "local"
         external = tmp_path / "vault"
         local.mkdir(); external.mkdir()
@@ -834,34 +822,9 @@ class TestExternalSkillMutations:
         with _two_roots(local, external):
             result = _delete_skill("ext-skill")
 
-        assert result["success"] is True, result
-        assert not skill_dir.exists()
-        # The external root must NOT be rmdir'd, even when empty after deletion
-        assert external.exists() and external.is_dir()
-
-    def test_delete_external_skill_cleans_empty_category(self, tmp_path):
-        """When a skill lives under external/<category>/<name>, deleting the
-        last skill in the category should rmdir the empty category dir but
-        stop at the external root."""
-        local = tmp_path / "local"
-        external = tmp_path / "vault"
-        local.mkdir(); external.mkdir()
-        cat_dir = external / "team"
-        cat_dir.mkdir()
-        skill_dir = cat_dir / "ext-skill"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: ext-skill\ndescription: An external skill.\n---\n\n"
-            "# External\n\nBody.\n"
-        )
-
-        with _two_roots(local, external):
-            result = _delete_skill("ext-skill")
-
-        assert result["success"] is True, result
-        assert not skill_dir.exists()
-        assert not cat_dir.exists()  # empty category cleaned up
-        assert external.exists()     # but never the external root
+        self._assert_read_only(result)
+        assert skill_dir.exists()
+        assert external.exists()
 
     def test_create_still_writes_to_local_root(self, tmp_path):
         """Creating a new skill always lands in local SKILLS_DIR, never

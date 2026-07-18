@@ -299,13 +299,32 @@ def _background_review_write_guard(
     skill_dir: Path,
     action: str,
 ) -> Optional[Dict[str, Any]]:
-    """Refuse autonomous curator writes to externally owned skills.
+    """Keep all model-facing skill mutations inside the active profile."""
+    if skill_dir.is_symlink():
+        return {
+            "success": False,
+            "error": (
+                f"Refusing {action} for skill '{name}': the skill directory is "
+                "a symlink. Model-facing skill writes never follow symlinks."
+            ),
+        }
+    try:
+        local_root = _skills_dir().resolve()
+        resolved_skill = skill_dir.resolve()
+        resolved_skill.relative_to(local_root)
+    except (OSError, RuntimeError, ValueError):
+        return {
+            "success": False,
+            "error": (
+                f"Skill '{name}' is read-only through skill_manage because it "
+                "lives outside the active profile-local skills root. "
+                "Shared/external skill maintenance requires an explicit "
+                "administrative file or repository workflow."
+            ),
+        }
 
-    Foreground agents may still perform user-directed edits to external,
-    bundled, or hub-installed skills. The background review fork is different:
-    it is autonomous lifecycle maintenance, so its write surface is restricted
-    to local curator-owned sediment.
-    """
+    # Profile-local writes are allowed in foreground turns. Background review
+    # remains narrower: only unpinned, curator-owned sediment is writable.
     try:
         from tools.skill_provenance import is_background_review
         if not is_background_review():
@@ -333,20 +352,6 @@ def _background_review_write_guard(
             }
     except Exception:
         logger.debug("pinned skill guard lookup failed for %s", name, exc_info=True)
-
-    try:
-        from agent.skill_utils import is_external_skill_path
-        if is_external_skill_path(skill_dir):
-            return {
-                "success": False,
-                "error": (
-                    f"Refusing background curator {action} for skill '{name}': "
-                    "the skill lives in skills.external_dirs, which are "
-                    "externally owned and read-only to autonomous curation."
-                ),
-            }
-    except Exception:
-        logger.debug("external skill guard lookup failed for %s", name, exc_info=True)
 
     try:
         from tools import skill_usage
@@ -1394,16 +1399,14 @@ def skill_manage(
             pass
         # Curator telemetry: bump patch_count on edit/patch/write_file (the actions
         # that mutate an existing skill's guidance), drop the record on delete.
-        # Only mark a skill as agent-created when the background self-improvement
-        # review fork creates it — foreground `skill_manage(create)` calls are
-        # user-directed, and those skills belong to the user (the curator must
-        # not touch them). Best-effort; telemetry failures never break the tool.
+        # Every model-facing create is profile-local autonomous sediment and is
+        # curator-managed unless the user pins it. Human-authored shared skills
+        # use the explicit administrative repository/file path instead.
+        # Best-effort; telemetry failures never break the tool.
         try:
             from tools.skill_usage import bump_patch, forget, mark_agent_created
-            from tools.skill_provenance import is_background_review
             if action == "create":
-                if is_background_review():
-                    mark_agent_created(name)
+                mark_agent_created(name)
             elif action in {"patch", "edit", "write_file", "remove_file"}:
                 bump_patch(name)
             elif action == "delete":
@@ -1427,7 +1430,9 @@ SKILL_MANAGE_SCHEMA = {
     "description": (
         "Manage skills (create, update, delete). Skills are your procedural "
         "memory — reusable approaches for recurring task types. "
-        f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live.\n\n"
+        f"New skills go to {display_hermes_home()}/skills/. Model-facing mutations "
+        "are restricted to that active profile-local directory; shared/external "
+        "skills are read-only and require an explicit administrative workflow.\n\n"
         "Actions: create (full SKILL.md + optional category), "
         "patch (old_string/new_string — preferred for fixes), "
         "edit (full SKILL.md rewrite — major overhauls only), "

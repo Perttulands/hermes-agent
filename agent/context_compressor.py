@@ -2589,8 +2589,8 @@ This compaction should PRIORITISE preserving all information related to the focu
         the budget is reached. Returns the index where the tail starts.
 
         ``token_budget`` defaults to ``self.tail_token_budget`` which is
-        derived from ``summary_target_ratio * context_length``, so it
-        scales automatically with the model's context window.
+        derived from ``summary_target_ratio * threshold_tokens``, so it scales
+        with both the model context window and configured compression threshold.
 
         Token budget is the primary criterion.  A bounded message-count floor
         keeps a short run of recent turns verbatim even when the budget is
@@ -3003,12 +3003,14 @@ This compaction should PRIORITISE preserving all information related to the focu
         if not _merge_summary_into_tail:
             summary = summary + "\n\n" + _SUMMARY_END_MARKER
 
+        _canonical_summary_message: Optional[Dict[str, Any]] = None
         if not _merge_summary_into_tail:
-            compressed.append({
+            _canonical_summary_message = {
                 "role": summary_role,
                 "content": summary,
                 COMPRESSED_SUMMARY_METADATA_KEY: True,
-            })
+            }
+            compressed.append(_canonical_summary_message)
 
         for i in range(compress_end, n_messages):
             msg = _fresh_compaction_message_copy(messages[i])
@@ -3037,8 +3039,26 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Mark the merged message so frontends can identify it as
                 # containing a compression summary prefix.
                 msg[COMPRESSED_SUMMARY_METADATA_KEY] = True
+                _canonical_summary_message = msg
                 _merge_summary_into_tail = False
             compressed.append(msg)
+
+        # Structural invariant: one compaction generation leaves exactly one
+        # canonical handoff. A fresh gateway agent resets protection decay, so
+        # an older summary can otherwise survive inside protect_first_n while a
+        # new one is inserted (# long-session authority corruption). The new
+        # summary already carries the old handoff through _previous_summary;
+        # retaining the old summary message only creates duplicate authority.
+        if _canonical_summary_message is not None:
+            compressed = [
+                msg
+                for msg in compressed
+                if msg is _canonical_summary_message
+                or not (
+                    self._has_compressed_summary_metadata(msg)
+                    or self._is_context_summary_content(msg.get("content"))
+                )
+            ]
 
         self.compression_count += 1
 
