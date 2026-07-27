@@ -409,11 +409,9 @@ def reload_skills() -> Dict[str, Any]:
     slash-command map (``agent.skill_commands._skill_commands``) reflects
     skills added or removed on disk.
 
-    This does NOT invalidate the skills system-prompt cache. Skills are
-    called by name via ``/skill-name``, ``skills_list``, or ``skill_view``
-    — they don't need to be in the system prompt for the model to use them.
-    Keeping the prompt cache intact preserves prefix caching across the
-    reload, so a user invoking ``/reload-skills`` pays no cache-reset cost.
+    This clears the process-local skills prompt LRU so a later reset or new
+    session observes invocation-policy changes. It preserves both the disk
+    snapshot and every active agent's byte-stable ``_cached_system_prompt``.
 
     Returns:
         Dict with keys::
@@ -448,6 +446,13 @@ def reload_skills() -> Dict[str, Any]:
     new_commands = scan_skill_commands()
 
     after = _snapshot(new_commands)
+
+    # A reload can change whether a skill is model-invokable. Drop only the
+    # shared in-process rendering cache so the next prompt build revalidates
+    # the disk snapshot manifest. Active agents keep their own cached prompt.
+    from agent.prompt_builder import clear_skills_system_prompt_cache
+
+    clear_skills_system_prompt_cache()
 
     added_names = sorted(set(after) - set(before))
     removed_names = sorted(set(before) - set(after))

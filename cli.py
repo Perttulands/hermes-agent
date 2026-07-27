@@ -10760,14 +10760,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Reload skills: rescan ~/.hermes/skills/ and queue a note for the
         next user turn.
 
-        Skills don't need to live in the system prompt for the model to use
-        them (they're invoked via ``/skill-name``, ``skills_list``, or
-        ``skill_view`` at runtime), so this does NOT clear the prompt cache.
-        It rescans the slash-command map, prints the diff for the user, and
-        — if any skills were added or removed — queues a one-shot note that
-        gets prepended to the next user message. This preserves message
-        alternation (no phantom user turn injected out of band) and keeps
-        prompt caching intact.
+        It rescans the slash-command map and clears only the process-local
+        skills prompt LRU for later sessions. The active agent's cached prompt
+        remains byte-stable. If any skills were added or removed, a one-shot
+        note is prepended to the next user message without adding a phantom
+        turn to conversation history.
         """
         try:
             from agent.skill_commands import reload_skills, get_skill_commands

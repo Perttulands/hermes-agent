@@ -8,6 +8,7 @@ user message (see cli.py ~L8770, same pattern as
 turn is persisted to ``conversation_history``.
 """
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -23,6 +24,65 @@ def _make_cli():
 
 
 class TestReloadSkillsCLI:
+    def test_policy_toggle_preserves_current_prompt_and_updates_next_session(
+        self, capsys, monkeypatch, tmp_path
+    ):
+        """Reload defers policy changes to the next prompt build.
+
+        The active conversation keeps its byte-stable cached prefix, while a
+        reset/new agent built after the real CLI reload sees both directions
+        of a user-only invocation-policy change.
+        """
+        import agent.skill_commands as skill_commands
+        from agent.prompt_builder import (
+            build_skills_system_prompt,
+            clear_skills_system_prompt_cache,
+        )
+
+        hermes_home = tmp_path / ".hermes"
+        skill_dir = hermes_home / "skills" / "engineering" / "implement"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            "---\n"
+            "name: implement\n"
+            "description: Implement a ticket.\n"
+            "---\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(skill_commands, "_skill_commands", {})
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+        active_prompt = build_skills_system_prompt()
+        assert "implement" in active_prompt
+        cli = _make_cli()
+        cli.agent = SimpleNamespace(_cached_system_prompt=active_prompt)
+
+        skill_md.write_text(
+            skill_md.read_text().replace(
+                "description: Implement a ticket.\n",
+                "description: Implement a ticket.\n"
+                "disable-model-invocation: true\n",
+            )
+        )
+        cli._reload_skills()
+
+        assert cli.agent._cached_system_prompt == active_prompt
+        reset_prompt = build_skills_system_prompt()
+        assert "implement" not in reset_prompt
+
+        skill_md.write_text(
+            skill_md.read_text().replace(
+                "disable-model-invocation: true\n",
+                "",
+            )
+        )
+        cli._reload_skills()
+
+        assert cli.agent._cached_system_prompt == active_prompt
+        new_session_prompt = build_skills_system_prompt()
+        assert "implement" in new_session_prompt
+
     def test_reports_added_and_removed_and_queues_note(self, capsys):
         cli = _make_cli()
         with patch(

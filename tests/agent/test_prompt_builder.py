@@ -415,6 +415,68 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_discovery_preamble_loads_only_direct_clear_matches(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts.\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "directly and clearly matches" in result
+        assert "tangential overlap" in result
+
+    def test_discovery_preamble_explains_explicit_user_only_invocation(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts.\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "user-only skills are intentionally absent" in result
+        assert "explicitly by name or slash command" in result
+
+    def test_discovery_preamble_keeps_focused_hermes_and_maintenance_routing(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts.\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "Hermes Agent configuration or troubleshooting" in result
+        assert "load `hermes-agent` first" in result
+        assert "Maintain skill content with `skill_manage`" in result
+
+    def test_discovery_preamble_drops_coercive_loading_essay(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "coding" / "python-debug"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts.\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "even partially relevant" not in result
+        assert "Err on the side of loading" not in result
+        assert "Only proceed without loading a skill" not in result
+
     def test_user_only_skill_is_excluded_from_cold_and_snapshot_discovery(
         self, monkeypatch, tmp_path
     ):
@@ -1681,4 +1743,3 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-

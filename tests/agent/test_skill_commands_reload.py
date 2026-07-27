@@ -2,9 +2,9 @@
 
 Covers the helper that powers ``/reload-skills`` (CLI + gateway slash command).
 The helper rescans the skills directory and returns a diff of what changed.
-It does NOT invalidate the skills system-prompt cache — skills are invoked
-at runtime via ``/skill-name``, ``skills_list``, or ``skill_view`` and don't
-need to live in the system prompt.
+It clears only the process-local skills system-prompt cache so later sessions
+observe invocation-policy changes while active agents retain their own cached
+prefix and the disk snapshot remains available.
 
 ``added`` and ``removed`` are lists of ``{"name": str, "description": str}``
 dicts. Descriptions are truncated to 60 chars.
@@ -137,12 +137,7 @@ class TestReloadSkillsHelper:
         assert result["removed"] == []
 
     def test_does_not_invalidate_prompt_cache_snapshot(self, hermes_home):
-        """reload_skills must NOT delete the skills prompt-cache snapshot.
-
-        Skills are called at runtime — the system prompt doesn't need to
-        mention them for the model to use them — so reloading them should
-        preserve prefix caching.
-        """
+        """reload_skills must not delete the reusable disk snapshot."""
         from agent.prompt_builder import _skills_prompt_snapshot_path
         from agent.skill_commands import reload_skills
 
