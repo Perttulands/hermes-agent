@@ -70,6 +70,25 @@ def test_metadata_missing_entirely():
     }
 
 
+def test_model_invocation_policy_defaults_on_and_honors_user_only_flag():
+    """Only the explicit Agent Skills flag removes autonomous reach."""
+    from agent import skill_utils
+
+    assert skill_utils.skill_allows_model_invocation({}) is True
+    assert (
+        skill_utils.skill_allows_model_invocation(
+            {"disable-model-invocation": False}
+        )
+        is True
+    )
+    assert (
+        skill_utils.skill_allows_model_invocation(
+            {"disable-model-invocation": True}
+        )
+        is False
+    )
+
+
 def test_iter_skill_index_files_prunes_dependency_dirs(tmp_path):
     real = tmp_path / "real-skill"
     real.mkdir()

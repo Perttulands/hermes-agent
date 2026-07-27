@@ -617,18 +617,27 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
         return False
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(
+    *, skip_disabled: bool = False, include_user_only: bool = True
+) -> List[Dict[str, Any]]:
     """Recursively find all skills in ~/.hermes/skills/ and external dirs.
 
     Args:
         skip_disabled: If True, return ALL skills regardless of disabled
             state (used by ``hermes skills`` config UI). Default False
             filters out disabled skills.
+        include_user_only: Include skills marked
+            ``disable-model-invocation: true``. Explicit and configuration
+            surfaces use the default; autonomous listings set this False.
 
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import (
+        get_external_skills_dirs,
+        iter_skill_index_files,
+        skill_allows_model_invocation,
+    )
 
     skills = []
     seen_names: set = set()
@@ -664,6 +673,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 if name in seen_names:
                     continue
                 if name in disabled:
+                    continue
+                if not include_user_only and not skill_allows_model_invocation(
+                    frontmatter
+                ):
+                    seen_names.add(name)
                     continue
 
                 description = frontmatter.get("description", "")
@@ -732,7 +746,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             )
 
         # Find all skills
-        all_skills = _find_all_skills()
+        all_skills = _find_all_skills(include_user_only=False)
 
         if not all_skills:
             return json.dumps(

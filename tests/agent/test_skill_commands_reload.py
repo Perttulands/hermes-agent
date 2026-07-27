@@ -157,3 +157,39 @@ class TestReloadSkillsHelper:
             "prompt cache snapshot should be preserved — skills don't live "
             "in the system prompt so there's no reason to invalidate it"
         )
+
+    def test_user_only_reload_keeps_cached_prompt_byte_stable(self, hermes_home):
+        """Slash refresh must not mutate an existing conversation prefix."""
+        from agent.prompt_builder import (
+            build_skills_system_prompt,
+            clear_skills_system_prompt_cache,
+        )
+        from agent.skill_commands import reload_skills
+
+        _write_skill(hermes_home / "skills", "diagnosing-bugs", "Diagnose bugs.")
+        user_only = _write_skill(
+            hermes_home / "skills", "implement", "Implement a ticket."
+        )
+        skill_md = user_only / "SKILL.md"
+        skill_md.write_text(
+            skill_md.read_text().replace(
+                "description: Implement a ticket.\n",
+                "description: Implement a ticket.\n"
+                "disable-model-invocation: true\n",
+            )
+        )
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        before = build_skills_system_prompt()
+        assert "diagnosing-bugs" in before
+        assert "implement" not in before
+
+        skill_md.write_text(
+            skill_md.read_text().replace(
+                "description: Implement a ticket.",
+                "description: Changed user-facing description.",
+            )
+        )
+        reload_skills()
+        after = build_skills_system_prompt()
+
+        assert after == before

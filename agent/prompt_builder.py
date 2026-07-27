@@ -23,6 +23,7 @@ from agent.skill_utils import (
     get_disabled_skill_names,
     iter_skill_index_files,
     parse_frontmatter,
+    skill_allows_model_invocation,
     skill_matches_environment,
     skill_matches_platform,
 )
@@ -1255,7 +1256,7 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1350,6 +1351,7 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "allow_model_invocation": skill_allows_model_invocation(frontmatter),
     }
 
 
@@ -1474,6 +1476,7 @@ def build_skills_system_prompt(
     snapshot = _load_skills_snapshot(skills_dir)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
+    reserved_skill_names: set[str] = set()
     category_descriptions: dict[str, str] = {}
 
     if snapshot is not None:
@@ -1488,6 +1491,9 @@ def build_skills_system_prompt(
             if not skill_matches_platform({"platforms": platforms}):
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
+                continue
+            if not entry.get("allow_model_invocation", True):
+                reserved_skill_names.add(frontmatter_name)
                 continue
             if not _skill_should_show(
                 entry.get("conditions") or {},
@@ -1513,6 +1519,9 @@ def build_skills_system_prompt(
                 continue
             skill_name = entry["skill_name"]
             if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                continue
+            if not entry["allow_model_invocation"]:
+                reserved_skill_names.add(entry["frontmatter_name"])
                 continue
             if not _skill_should_show(
                 extract_skill_conditions(frontmatter),
@@ -1553,6 +1562,7 @@ def build_skills_system_prompt(
     for cat_skills in skills_by_category.values():
         for name, _desc in cat_skills:
             seen_skill_names.add(name)
+    seen_skill_names.update(reserved_skill_names)
 
     for ext_dir in external_dirs:
         if not ext_dir.exists():
@@ -1568,6 +1578,9 @@ def build_skills_system_prompt(
                 if frontmatter_name in seen_skill_names:
                     continue
                 if frontmatter_name in disabled or skill_name in disabled:
+                    continue
+                if not entry["allow_model_invocation"]:
+                    seen_skill_names.add(frontmatter_name)
                     continue
                 if not _skill_should_show(
                     extract_skill_conditions(frontmatter),

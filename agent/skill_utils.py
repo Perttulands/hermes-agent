@@ -157,6 +157,19 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     return frontmatter, body
 
 
+def skill_allows_model_invocation(frontmatter: Dict[str, Any]) -> bool:
+    """Return whether a skill may be offered for autonomous model use.
+
+    Agent Skills packages opt out with ``disable-model-invocation: true``.
+    Explicit loads use separate paths and intentionally do not call this
+    predicate.
+    """
+    value = frontmatter.get("disable-model-invocation", False)
+    if isinstance(value, bool):
+        return not value
+    return str(value).strip().lower() not in {"1", "true", "yes", "on"}
+
+
 # ── Platform matching ─────────────────────────────────────────────────────
 
 

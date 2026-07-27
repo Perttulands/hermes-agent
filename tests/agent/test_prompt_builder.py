@@ -415,6 +415,43 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_user_only_skill_is_excluded_from_cold_and_snapshot_discovery(
+        self, monkeypatch, tmp_path
+    ):
+        """User-only policy removes autonomous reach on both cache paths."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "engineering"
+        user_only = skills_dir / "implement"
+        user_only.mkdir(parents=True)
+        (user_only / "SKILL.md").write_text(
+            "---\n"
+            "name: implement\n"
+            "description: Implement a ticket.\n"
+            "disable-model-invocation: true\n"
+            "---\n"
+        )
+        model_invoked = skills_dir / "diagnosing-bugs"
+        model_invoked.mkdir()
+        (model_invoked / "SKILL.md").write_text(
+            "---\n"
+            "name: diagnosing-bugs\n"
+            "description: Diagnose hard bugs.\n"
+            "---\n"
+        )
+
+        cold = build_skills_system_prompt()
+
+        assert "diagnosing-bugs" in cold
+        assert "implement" not in cold
+
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        clear_skills_system_prompt_cache()
+        snapshot_backed = build_skills_system_prompt()
+
+        assert snapshot_backed == cold
+        assert "implement" not in snapshot_backed
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"
@@ -1644,5 +1681,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

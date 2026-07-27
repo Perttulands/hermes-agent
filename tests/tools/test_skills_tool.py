@@ -331,6 +331,21 @@ class TestSkillsList:
         result = json.loads(raw)
         assert result["count"] == 2
 
+    def test_excludes_user_only_skills_from_model_listing(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "diagnosing-bugs")
+            _make_skill(
+                tmp_path,
+                "implement",
+                frontmatter_extra="disable-model-invocation: true\n",
+            )
+            raw = skills_list()
+
+        result = json.loads(raw)
+        assert [skill["name"] for skill in result["skills"]] == [
+            "diagnosing-bugs"
+        ]
+
     def test_category_filter(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "skill-a", category="devops")
@@ -372,6 +387,20 @@ class TestSkillView:
         assert result["success"] is True
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
+
+    def test_explicitly_views_user_only_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "implement",
+                frontmatter_extra="disable-model-invocation: true\n",
+                body="Explicit implementation content.",
+            )
+            raw = skill_view("implement")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Explicit implementation content." in result["content"]
 
     def test_view_skill_by_frontmatter_name_when_dir_differs(self, tmp_path):
         # The on-disk directory ("alias-dir") differs from the skill's

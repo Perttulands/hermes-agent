@@ -139,6 +139,40 @@ class TestExternalSkillsInFindAll:
         assert len(matching) == 1
         assert matching[0]["description"] == "Local version"
 
+    def test_local_user_only_skill_shadows_external_model_invoked_copy(
+        self, hermes_home, external_skills_dir
+    ):
+        """Visibility filtering must not weaken profile-local precedence."""
+        local_skills = hermes_home / "skills"
+        local_skill = local_skills / "my-external-skill"
+        local_skill.mkdir(parents=True)
+        (local_skill / "SKILL.md").write_text(
+            "---\n"
+            "name: my-external-skill\n"
+            "description: Local user-only version\n"
+            "disable-model-invocation: true\n"
+            "---\n\n"
+            "Local content.\n"
+        )
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            from agent.prompt_builder import (
+                build_skills_system_prompt,
+                clear_skills_system_prompt_cache,
+            )
+            from agent.skill_utils import _external_dirs_cache_clear
+
+            _external_dirs_cache_clear()
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+            prompt = build_skills_system_prompt()
+
+        assert "my-external-skill" not in prompt
+        assert "Local user-only version" not in prompt
+        assert "A skill from an external directory" not in prompt
+
 
 class TestExternalSkillView:
     def test_skill_view_finds_external(self, hermes_home, external_skills_dir):
@@ -154,3 +188,31 @@ class TestExternalSkillView:
             result = json.loads(skill_view("my-external-skill"))
         assert result["success"] is True
         assert "external things" in result["content"]
+
+    def test_skill_view_explicitly_loads_user_only_external_skill(
+        self, hermes_home, external_skills_dir
+    ):
+        skill_md = external_skills_dir / "my-external-skill" / "SKILL.md"
+        skill_md.write_text(
+            "---\n"
+            "name: my-external-skill\n"
+            "description: User-only external skill\n"
+            "disable-model-invocation: true\n"
+            "---\n\n"
+            "Explicit user-only content.\n"
+        )
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
+        )
+        local_skills = hermes_home / "skills"
+
+        with (
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+            patch("tools.skills_tool.SKILLS_DIR", local_skills),
+        ):
+            from tools.skills_tool import skill_view
+
+            result = json.loads(skill_view("my-external-skill"))
+
+        assert result["success"] is True
+        assert "Explicit user-only content." in result["content"]
