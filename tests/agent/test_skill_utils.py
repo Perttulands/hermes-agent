@@ -182,10 +182,16 @@ def test_skill_config_raw_cache_invalidates_on_config_edit(tmp_path, monkeypatch
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     skill_utils._external_dirs_cache_clear()
     assert get_disabled_skill_names() == {"old-skill"}
+    previous_mtime_ns = config_path.stat().st_mtime_ns
 
     config_path.write_text("skills:\n  disabled: [new-skill]\n", encoding="utf-8")
     import os
-    os.utime(config_path, None)
+
+    updated = config_path.stat()
+    os.utime(
+        config_path,
+        ns=(updated.st_atime_ns, previous_mtime_ns + 1_000_000_000),
+    )
 
     assert get_disabled_skill_names() == {"new-skill"}
 
